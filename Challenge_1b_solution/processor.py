@@ -1,3 +1,4 @@
+# processor.py
 import os
 import json
 import datetime
@@ -5,10 +6,9 @@ import pdfplumber
 from sentence_transformers import SentenceTransformer, util
 import numpy as np
 
-model = SentenceTransformer("./local_model")  # Use locally downloaded model
+model = SentenceTransformer("./local_model")  # small model for fast CPU inference
 
-
-def extract_text_from_pdfs(document_list, base_path="data"):
+def extract_text_from_pdfs(document_list, base_path="input"):
     doc_text = {}
     for doc in document_list:
         path = os.path.join(base_path, doc["filename"])
@@ -17,16 +17,6 @@ def extract_text_from_pdfs(document_list, base_path="data"):
             doc_text[doc["filename"]] = pages
     return doc_text
 
-
-def extract_title_from_text(text):
-    lines = text.split(". ")
-    for line in lines:
-        cleaned = line.strip("• ").strip()
-        if cleaned and len(cleaned.split()) <= 10:
-            return cleaned[:80]
-    return text[:80]
-
-
 def rank_sections(text_blocks, query, top_k=5):
     section_texts = [tb["text"] for tb in text_blocks]
     embeddings = model.encode(section_texts + [query], convert_to_tensor=True)
@@ -34,15 +24,16 @@ def rank_sections(text_blocks, query, top_k=5):
     top_indices = np.argsort(scores)[-top_k:][::-1]
     return [text_blocks[i] | {"score": scores[i]} for i in top_indices]
 
-
 def process_documents(input_payload):
     documents = input_payload["documents"]
     persona = input_payload["persona"]["role"]
     job = input_payload["job_to_be_done"]["task"]
     query = f"As a {persona}, {job}"
 
+    # Extract text
     raw_text = extract_text_from_pdfs(documents)
 
+    # Prepare blocks: doc, page_number, text
     all_blocks = []
     for doc, pages in raw_text.items():
         for i, text in enumerate(pages):
@@ -53,14 +44,16 @@ def process_documents(input_payload):
                     "text": text.strip().replace("\n", " ")
                 })
 
+    # Rank relevance
     top_blocks = rank_sections(all_blocks, query)
 
+    # Prepare JSON output
     timestamp = datetime.datetime.now().isoformat()
     extracted = []
     analysis = []
 
     for rank, block in enumerate(top_blocks, 1):
-        title_guess = extract_title_from_text(block["text"])
+        title_guess = block["text"].split(". ")[0][:80]  # crude section title guess
         extracted.append({
             "document": block["document"],
             "section_title": title_guess,
